@@ -5,231 +5,212 @@
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Roller Glow — 3D Prototype</title>
 <style>
-  html,body{height:100%;margin:0;background:#0b0f14;color:#e8f0ff;font-family:system-ui}
-  #ui{position:fixed;inset:auto 12px 12px 12px;display:flex;gap:8px;align-items:center;justify-content:space-between;pointer-events:none}
+  html,body{height:100%;margin:0;background:#0b0f14;color:#e8f0ff;font-family:system-ui,-apple-system,Segoe UI,Roboto}
+  #ui{position:fixed;left:12px;right:12px;bottom:12px;display:flex;gap:8px;justify-content:space-between;align-items:center;pointer-events:none}
   .card{pointer-events:auto;background:rgba(16,22,30,.7);backdrop-filter:blur(6px);border:1px solid #203040;border-radius:12px;padding:8px 10px;box-shadow:0 6px 24px rgba(0,0,0,.35)}
   .btn{cursor:pointer;border:1px solid #2f445c;border-radius:10px;background:linear-gradient(180deg,#1a2430,#121923);color:#eaf4ff;font-weight:700;padding:8px 12px}
-  .btn:disabled{opacity:.4;cursor:not-allowed}
+  .hint{opacity:.8;font-size:12px}
+  #err{position:fixed;top:10px;left:10px;right:10px;background:#3a1420;border:1px solid #6c3044;border-radius:10px;padding:10px;display:none}
   canvas{display:block}
 </style>
 </head>
 <body>
-<div id="ui" class="card">
-  <button id="prevBtn" class="btn">Prev</button>
-  <span>Level <span id="levelName">1</span> / 5</span>
-  <button id="nextBtn" class="btn">Next</button>
-  <button id="resetBtn" class="btn">Reset</button>
+<div id="ui">
+  <div class="card">
+    <span>LEVEL <span id="levelName">1</span> / 5</span>
+    <button id="prevBtn" class="btn">Prev</button>
+    <button id="nextBtn" class="btn">Next</button>
+    <button id="resetBtn" class="btn">Reset</button>
+  </div>
+  <div class="card hint">Mouse drag = rotate • Wheel = zoom • Arrows = move • Space = up • Shift = down</div>
 </div>
+<div id="err"></div>
 
 <script type="module">
 import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
 import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js';
 
-/* ---------- scene setup ---------- */
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0b0f14);
-
-/* camera */
-const camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.1, 1000);
-camera.position.set(20, 18, 24);
-
-/* renderer */
-const renderer = new THREE.WebGLRenderer({antialias:true});
-renderer.setPixelRatio(devicePixelRatio);
-renderer.setSize(innerWidth, innerHeight);
-renderer.shadowMap.enabled = true;
-document.body.appendChild(renderer.domElement);
-
-/* controls */
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.dampingFactor = 0.08;
-controls.rotateSpeed = 0.8;
-controls.minDistance = 8;
-controls.maxDistance = 80;
-
-/* lights */
-scene.add(new THREE.AmbientLight(0x8899aa, 0.6));
-const key = new THREE.DirectionalLight(0xffffff, 0.8);
-key.position.set(10,20,10);
-key.castShadow = true;
-key.shadow.mapSize.set(1024,1024);
-scene.add(key);
-const rim = new THREE.DirectionalLight(0x66aaff, 0.35);
-rim.position.set(-12,12,-8);
-scene.add(rim);
-
-/* arena */
-const ARENA = { x: 24, y: 14, z: 36 };
-const floorMat = new THREE.MeshPhysicalMaterial({ color: 0x0e1620, metalness: 0.5, roughness: 0.65 });
-const floor = new THREE.Mesh(new THREE.BoxGeometry(ARENA.x*2, 1, ARENA.z*2), floorMat);
-floor.position.y = -0.5;
-floor.receiveShadow = true;
-scene.add(floor);
-
-/* glass wall material */
-const glassMat = new THREE.MeshPhysicalMaterial({
-  color: 0x84a9ff, metalness: 0.2, roughness: 0.15,
-  transmission: 0.6, transparent: true, opacity: 0.35, thickness: 0.6,
-  ior: 1.25
-});
-function makeWall(w,h,d,x,y,z){
-  const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), glassMat);
-  m.position.set(x,y,z);
-  m.castShadow = true;
-  m.receiveShadow = true;
-  scene.add(m);
-  return m;
-}
-
-/* ball */
-const ballRadius = 1.2;
-const ballMat = new THREE.MeshPhysicalMaterial({
-  color: 0x45a3ff,
-  metalness: 1, roughness: 0.15, clearcoat: 1, clearcoatRoughness: 0.06
-});
-const ball = new THREE.Mesh(new THREE.SphereGeometry(ballRadius, 48, 32), ballMat);
-ball.position.set(0, ballRadius, -ARENA.z + 4);
-ball.castShadow = true;
-scene.add(ball);
-
-/* camera follow */
-controls.target.copy(ball.position);
-
-/* input */
-const keys = new Set();
-window.addEventListener('keydown', e=>{
-  if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown',' ','Shift'].includes(e.key)) e.preventDefault();
-  keys.add(e.key);
-});
-window.addEventListener('keyup', e=> keys.delete(e.key));
-
-/* physics */
-let vel = new THREE.Vector3();
-const accel = 22;
-const drag = 0.88;
-const maxSpeed = 12;
-const bounce = 0.55;
-let squash = 0;
-
-/* level list */
-const levels = [
-  // Level 1
-  ()=>{
-    makeWall(ARENA.x*2, 10, 0.8, 0, 4.5, -ARENA.z+0.4);
-    makeWall(ARENA.x*2, 10, 0.8, 0, 4.5,  ARENA.z-0.4);
-    makeWall(0.8, 10, ARENA.z*2, -ARENA.x+0.4, 4.5, 0);
-    makeWall(0.8, 10, ARENA.z*2,  ARENA.x-0.4, 4.5, 0);
-  },
-  // Level 2
-  ()=>{
-    levels[0]();
-    makeWall(16,2,2, 0,2, -6);
-    makeWall(16,2,2, 0,6,  6);
-  },
-  // Level 3
-  ()=>{
-    levels[0]();
-    makeWall(10,2,2, -8,8,-6);
-    makeWall(10,2,2,  8,10,0);
-  },
-  // Level 4
-  ()=>{
-    levels[0]();
-    for(let z=-12; z<=12; z+=6){
-      makeWall(18,2,0.6, 0, 3, z);
-      makeWall(18,2,0.6, 0, 7, z+3);
-    }
-  },
-  // Level 5
-  ()=>{
-    levels[0]();
-    const s=10, t=0.8, h=10, y=6;
-    makeWall(s, t, t, 0, y, -s/2); makeWall(s, t, t, 0, y, s/2);
-    makeWall(t, t, s, -s/2, y, 0); makeWall(t, t, s, s/2, y, 0);
-  }
-];
-let levelIndex = 0;
-function loadLevel(i){
-  // clear old walls (keep ball, floor, lights)
-  [...scene.children].forEach(obj=>{
-    if(obj !== ball && obj !== floor && obj.isMesh && obj.material === glassMat) scene.remove(obj);
-  });
-  levels[i]();
-  ball.position.set(0, ballRadius, -ARENA.z + 4);
-  vel.set(0,0,0);
-  squash = 0;
-  controls.target.copy(ball.position);
-  document.getElementById('levelName').textContent = (i+1);
-}
-loadLevel(levelIndex);
-
-/* UI */
-document.getElementById('prevBtn').onclick = ()=>{
-  levelIndex = (levelIndex+levels.length-1)%levels.length;
-  loadLevel(levelIndex);
+const showErr = (msg)=>{
+  const el = document.getElementById('err');
+  el.style.display='block'; el.textContent = msg;
+  console.error(msg);
 };
-document.getElementById('nextBtn').onclick = ()=>{
-  levelIndex = (levelIndex+1)%levels.length;
-  loadLevel(levelIndex);
-};
-document.getElementById('resetBtn').onclick = ()=> loadLevel(levelIndex);
 
-/* clamp helper */
-function clamp(x,a,b){ return Math.max(a, Math.min(b,x)); }
+try{
+  /* --- Scene / Camera / Renderer --- */
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0b0f14);
 
-/* loop */
-let last = performance.now();
-function tick(now){
-  const dt = Math.min(0.033, (now-last)/1000); last = now;
+  const camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.1, 1000);
+  camera.position.set(22, 18, 26);
 
-  const dir = new THREE.Vector3(
-    (keys.has('ArrowRight')?1:0) + (keys.has('ArrowLeft')?-1:0),
-    (keys.has(' ')?1:0) + (keys.has('Shift')?-1:0),
-    (keys.has('ArrowDown')?1:0) + (keys.has('ArrowUp')?-1:0)
-  ).normalize();
-
-  if(dir.lengthSq()>0){
-    vel.x += dir.x * accel * dt;
-    vel.y += dir.y * accel * dt;
-    vel.z += dir.z * accel * dt;
-  }
-
-  if(vel.length()>maxSpeed) vel.setLength(maxSpeed);
-  vel.multiplyScalar(Math.pow(drag, dt*60));
-  ball.position.addScaledVector(vel, dt);
-
-  // bounds collision
-  let hit=false;
-  if(ball.position.x > ARENA.x - ballRadius){ ball.position.x = ARENA.x - ballRadius; vel.x *= -bounce; hit=true; }
-  if(ball.position.x < -ARENA.x + ballRadius){ ball.position.x = -ARENA.x + ballRadius; vel.x *= -bounce; hit=true; }
-  if(ball.position.y > ARENA.y - ballRadius){ ball.position.y = ARENA.y - ballRadius; vel.y *= -bounce; hit=true; }
-  if(ball.position.y < ballRadius){ ball.position.y = ballRadius; vel.y *= -bounce; hit=true; }
-  if(ball.position.z > ARENA.z - ballRadius){ ball.position.z = ARENA.z - ballRadius; vel.z *= -bounce; hit=true; }
-  if(ball.position.z < -ARENA.z + ballRadius){ ball.position.z = -ARENA.z + ballRadius; vel.z *= -bounce; hit=true; }
-  if(hit) squash = 0.18;
-
-  // squash/stretch
-  if(squash>0){
-    const s = 1 + Math.sin((0.5 - Math.abs(0.5 - squash)/0.18)*Math.PI)*0.2;
-    ball.scale.set(s,s,s);
-    squash -= dt;
-    if(squash<=0) ball.scale.set(1,1,1);
-  }
-
-  controls.target.lerp(ball.position, 0.12);
-  controls.update();
-  renderer.render(scene, camera);
-  requestAnimationFrame(tick);
-}
-requestAnimationFrame(tick);
-
-/* resize */
-addEventListener('resize', ()=>{
-  camera.aspect = innerWidth/innerHeight;
-  camera.updateProjectionMatrix();
+  const renderer = new THREE.WebGLRenderer({antialias:true});
+  renderer.setPixelRatio(devicePixelRatio);
   renderer.setSize(innerWidth, innerHeight);
-});
+  renderer.shadowMap.enabled = true;
+  document.body.appendChild(renderer.domElement);
+
+  if(!renderer.capabilities.isWebGL2 && !renderer.capabilities.isWebGL1){
+    showErr('WebGL unavailable in this browser/tab. Try Chrome/Edge/Firefox, or enable WebGL in Safari settings.');
+  }
+
+  /* --- Controls --- */
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.minDistance = 8;
+  controls.maxDistance = 80;
+
+  /* --- Lights --- */
+  scene.add(new THREE.AmbientLight(0x99aabb, 0.7));
+  const key = new THREE.DirectionalLight(0xffffff, 0.9);
+  key.position.set(10,20,10); key.castShadow = true; key.shadow.mapSize.set(1024,1024);
+  scene.add(key);
+  const rim = new THREE.DirectionalLight(0x66aaff, 0.35); rim.position.set(-12,12,-8); scene.add(rim);
+
+  /* --- Arena & Groups --- */
+  const ARENA = { x: 24, y: 14, z: 36 };
+  const levelGroup = new THREE.Group(); scene.add(levelGroup); // all level meshes live here
+
+  const floorMat = new THREE.MeshPhongMaterial({ color: 0x14202e, shininess: 8 });
+  const floor = new THREE.Mesh(new THREE.BoxGeometry(ARENA.x*2, 1, ARENA.z*2), floorMat);
+  floor.position.y = -0.5; floor.receiveShadow = true; scene.add(floor);
+
+  const glassMat = new THREE.MeshPhysicalMaterial({
+    color: 0x84a9ff, metalness: 0.2, roughness: 0.15,
+    transmission: 0.6, transparent: true, opacity: 0.35, thickness: 0.6, ior: 1.25
+  });
+  function addWall(w,h,d,x,y,z){
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), glassMat);
+    m.position.set(x,y,z); m.castShadow=true; m.receiveShadow=true;
+    levelGroup.add(m); return m;
+  }
+
+  /* --- Bright test cube (guaranteed visible) --- */
+  const testCube = new THREE.Mesh(
+    new THREE.BoxGeometry(3,3,3),
+    new THREE.MeshStandardMaterial({color:0xff6699, metalness:0.8, roughness:0.2})
+  );
+  testCube.position.set(0, 3, 0);
+  scene.add(testCube);
+
+  /* --- Ball --- */
+  const ballRadius = 1.2;
+  const ballMat = new THREE.MeshPhysicalMaterial({ color: 0x45a3ff, metalness: 1, roughness: 0.15, clearcoat: 1, clearcoatRoughness: 0.06 });
+  const ball = new THREE.Mesh(new THREE.SphereGeometry(ballRadius, 48, 32), ballMat);
+  ball.position.set(0, ballRadius, -ARENA.z + 4);
+  ball.castShadow = true; scene.add(ball);
+  const glow = new THREE.PointLight(0x46c0ff, 0.9, 12); ball.add(glow);
+
+  controls.target.copy(ball.position);
+
+  /* --- Input --- */
+  const keys = new Set();
+  addEventListener('keydown', e=>{
+    if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown',' ','Shift'].includes(e.key)) e.preventDefault();
+    keys.add(e.key);
+  });
+  addEventListener('keyup', e=> keys.delete(e.key));
+
+  /* --- Physics --- */
+  let vel = new THREE.Vector3();
+  const accel = 22, drag = 0.88, maxSpeed = 12, bounce = 0.55;
+  let squash = 0;
+
+  /* --- Levels (5) --- */
+  const baseWalls = ()=>{
+    addWall(ARENA.x*2, 10, 0.8, 0, 4.5, -ARENA.z+0.4);
+    addWall(ARENA.x*2, 10, 0.8, 0, 4.5,  ARENA.z-0.4);
+    addWall(0.8, 10, ARENA.z*2, -ARENA.x+0.4, 4.5, 0);
+    addWall(0.8, 10, ARENA.z*2,  ARENA.x-0.4, 4.5, 0);
+  };
+  const levels = [
+    ()=>{ baseWalls(); },
+    ()=>{ baseWalls(); addWall(16,2,2, 0,2,-6); addWall(16,2,2, 0,6,6); },
+    ()=>{ baseWalls(); addWall(10,2,2, -8,8,-6); addWall(10,2,2, 8,10,0); },
+    ()=>{ baseWalls(); for(let z=-12; z<=12; z+=6){ addWall(18,2,0.6,0,3,z); addWall(18,2,0.6,0,7,z+3);} },
+    ()=>{ baseWalls(); const s=10,t=0.8,h=10,y=6; addWall(s,t,t,0,y,-s/2); addWall(s,t,t,0,y,s/2); addWall(t,t,s,-s/2,y,0); addWall(t,t,s,s/2,y,0); }
+  ];
+  let levelIndex = 0;
+
+  function clearLevel(){
+    // dispose geometries to avoid leaks
+    for(const child of [...levelGroup.children]){
+      child.geometry.dispose();
+      // shared material, don't dispose glassMat
+      levelGroup.remove(child);
+    }
+  }
+  function loadLevel(i){
+    clearLevel();
+    levels[i]();
+    ball.position.set(0, ballRadius, -ARENA.z + 4);
+    vel.set(0,0,0); squash=0;
+    controls.target.copy(ball.position);
+    document.getElementById('levelName').textContent = (i+1);
+  }
+  loadLevel(levelIndex);
+
+  /* --- UI --- */
+  document.getElementById('prevBtn').onclick = ()=>{ levelIndex=(levelIndex+levels.length-1)%levels.length; loadLevel(levelIndex); };
+  document.getElementById('nextBtn').onclick = ()=>{ levelIndex=(levelIndex+1)%levels.length; loadLevel(levelIndex); };
+  document.getElementById('resetBtn').onclick = ()=> loadLevel(levelIndex);
+
+  /* --- Helpers --- */
+  const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
+
+  /* --- Main loop --- */
+  let last = performance.now();
+  function tick(now){
+    const dt = Math.min(0.033, (now-last)/1000); last = now;
+
+    // rotate test cube (visibility check)
+    testCube.rotation.y += 0.5*dt;
+    testCube.rotation.x += 0.2*dt;
+
+    const dir = new THREE.Vector3(
+      (keys.has('ArrowRight')?1:0) + (keys.has('ArrowLeft')?-1:0),
+      (keys.has(' ')?1:0) + (keys.has('Shift')?-1:0),
+      (keys.has('ArrowDown')?1:0) + (keys.has('ArrowUp')?-1:0)
+    ).normalize();
+
+    if(dir.lengthSq()>0){
+      vel.x += dir.x * accel * dt;
+      vel.y += dir.y * accel * dt;
+      vel.z += dir.z * accel * dt;
+    }
+
+    if(vel.length()>maxSpeed) vel.setLength(maxSpeed);
+    vel.multiplyScalar(Math.pow(drag, dt*60));
+    ball.position.addScaledVector(vel, dt);
+
+    let hit=false;
+    if(ball.position.x >  ARENA.x-1.2){ ball.position.x =  ARENA.x-1.2; vel.x*=-bounce; hit=true; }
+    if(ball.position.x < -ARENA.x+1.2){ ball.position.x = -ARENA.x+1.2; vel.x*=-bounce; hit=true; }
+    if(ball.position.y >  ARENA.y-1.2){ ball.position.y =  ARENA.y-1.2; vel.y*=-bounce; hit=true; }
+    if(ball.position.y <  1.2){           ball.position.y =  1.2;         vel.y*=-bounce; hit=true; }
+    if(ball.position.z >  ARENA.z-1.2){ ball.position.z =  ARENA.z-1.2; vel.z*=-bounce; hit=true; }
+    if(ball.position.z < -ARENA.z+1.2){ ball.position.z = -ARENA.z+1.2; vel.z*=-bounce; hit=true; }
+    if(hit) squash = 0.18;
+    if(squash>0){ const s=1+Math.sin((0.5-Math.abs(0.5-squash)/0.18)*Math.PI)*0.2; ball.scale.set(s,s,s); squash-=dt; if(squash<=0) ball.scale.set(1,1,1); }
+
+    controls.target.lerp(ball.position, 0.12);
+    controls.update();
+    renderer.render(scene, camera);
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+  /* --- Resize --- */
+  addEventListener('resize', ()=>{
+    camera.aspect = innerWidth/innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+  });
+
+}catch(e){
+  showErr('Script error: ' + (e?.message||e));
+}
 </script>
 </body>
 </html>
