@@ -1,16 +1,16 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Roller Glow — Slide Prototype</title>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Roller Glow — Pure WebGL</title>
 <style>
-  html,body{height:100%;margin:0;background:#0b0f14;color:#e8f0ff;font-family:system-ui,-apple-system,Segoe UI,Roboto}
-  #ui{position:fixed;left:12px;right:12px;top:12px;display:flex;gap:8px;justify-content:space-between;align-items:center;pointer-events:none;z-index:5}
-  .card{pointer-events:auto;background:rgba(16,22,30,.72);backdrop-filter:blur(6px);border:1px solid #203040;border-radius:12px;padding:8px 10px;box-shadow:0 6px 24px rgba(0,0,0,.35)}
+  html,body{margin:0;height:100%;background:#0b0f14;color:#e8f0ff;font-family:system-ui,-apple-system,Segoe UI,Roboto}
+  canvas{display:block;width:100vw;height:100vh}
+  #ui{position:fixed;left:12px;right:12px;top:12px;display:flex;justify-content:space-between;align-items:center;gap:8px;z-index:5;pointer-events:none}
+  .card{pointer-events:auto;background:rgba(16,22,30,.72);border:1px solid #203040;border-radius:12px;padding:8px 10px;backdrop-filter:blur(6px);box-shadow:0 6px 24px rgba(0,0,0,.35)}
   .btn{cursor:pointer;border:1px solid #2f445c;border-radius:10px;background:linear-gradient(180deg,#1a2430,#121923);color:#eaf4ff;font-weight:700;padding:8px 12px}
   .hint{opacity:.85;font-size:12px}
-  canvas{display:block}
 </style>
 </head>
 <body>
@@ -24,285 +24,319 @@
   <div class="card hint">Mouse drag = rotate • Wheel = zoom • Arrows = slide • Space = up • Shift = down</div>
 </div>
 
-<script type="module">
-/* Import Three.js + OrbitControls from CDN */
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js?v=4';
-import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js?v=4';
+<canvas id="gl"></canvas>
+<script>
+/* -------------------- tiny math -------------------- */
+const M=Float32Array;
+function mat4(){return new M(16)}
+function ident(o){o.set([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);return o}
+function mul(a,b,out){out=out||mat4();const o=out, A=a,B=b;
+  for(let r=0;r<4;r++)for(let c=0;c<4;c++)o[c+4*r]=A[0+4*r]*B[c+0]+A[1+4*r]*B[c+4]+A[2+4*r]*B[c+8]+A[3+4*r]*B[c+12];
+  return o}
+function translate(m,v){const t=ident(mat4());t[12]=v[0];t[13]=v[1];t[14]=v[2];return mul(m,t,mat4())}
+function scale(m,v){const s=ident(mat4());s[0]=v[0];s[5]=v[1];s[10]=v[2];return mul(m,s,mat4())}
+function rotateY(m,a){const c=Math.cos(a),s=Math.sin(a);const r=mat4();r.set([c,0,-s,0, 0,1,0,0, s,0,c,0, 0,0,0,1]);return mul(m,r,mat4())}
+function perspective(fovy,aspect,near,far){const f=1/Math.tan(fovy/2), nf=1/(near-far);const o=mat4();
+  o[0]=f/aspect;o[5]=f;o[10]=(far+near)*nf;o[11]=-1;o[14]=2*far*near*nf;return o}
+function lookAt(eye,at,up){const z=norm(sub(eye,at)), x=norm(cross(up,z)), y=cross(z,x);const o=ident(mat4());
+  o[0]=x[0];o[1]=y[0];o[2]=z[0];
+  o[4]=x[1];o[5]=y[1];o[6]=z[1];
+  o[8]=x[2];o[9]=y[2];o[10]=z[2];
+  o[12]=-dot(x,eye);o[13]=-dot(y,eye);o[14]=-dot(z,eye);return o}
+function add(a,b){return [a[0]+b[0],a[1]+b[1],a[2]+b[2]]}
+function sub(a,b){return [a[0]-b[0],a[1]-b[1],a[2]-b[2]]}
+function dot(a,b){return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]}
+function cross(a,b){return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]}
+function len(a){return Math.hypot(a[0],a[1],a[2])}
+function norm(a){const l=len(a)||1;return [a[0]/l,a[1]/l,a[2]/l]}
 
-/* ---------- Scene / Camera / Renderer ---------- */
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0b0f14);
+/* -------------------- WebGL boot -------------------- */
+const canvas=document.getElementById('gl');
+const gl=canvas.getContext('webgl',{alpha:false,antialias:true});
+if(!gl){ alert('WebGL not available'); }
 
-const camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.1, 1000);
-camera.position.set(22, 18, 28);
+function resize(){const dpr=window.devicePixelRatio||1; canvas.width=innerWidth*dpr; canvas.height=innerHeight*dpr;
+  canvas.style.width='100vw'; canvas.style.height='100vh'; gl.viewport(0,0,canvas.width,canvas.height); }
+addEventListener('resize',resize); resize();
 
-const renderer = new THREE.WebGLRenderer({antialias:true});
-renderer.setPixelRatio(devicePixelRatio);
-renderer.setSize(innerWidth, innerHeight);
-renderer.shadowMap.enabled = true;
-document.body.appendChild(renderer.domElement);
+/* -------------------- shaders -------------------- */
+const VERT=`
+attribute vec3 aPos;
+attribute vec3 aNormal;
+uniform mat4 uM,uVP;
+uniform vec3 uColor;
+varying vec3 vN;
+varying vec3 vW;
+varying vec3 vColor;
+void main(){
+  vec4 wPos = uM * vec4(aPos,1.0);
+  gl_Position = uVP * wPos;
+  vN = mat3(uM) * aNormal;
+  vW = wPos.xyz;
+  vColor = uColor;
+}`;
+const FRAG=`
+precision mediump float;
+varying vec3 vN;
+varying vec3 vW;
+varying vec3 vColor;
+uniform vec3 uLightDir;
+uniform float uAlpha;
+void main(){
+  vec3 N = normalize(vN);
+  float NdL = max(dot(N, normalize(-uLightDir)), 0.05);
+  vec3 base = vColor * (0.25 + 0.75*NdL);
+  gl_FragColor = vec4(base, uAlpha);
+}`;
+function compile(type,src){const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s;}
+const prog=gl.createProgram();
+gl.attachShader(prog,compile(gl.VERTEX_SHADER,VERT));
+gl.attachShader(prog,compile(gl.FRAGMENT_SHADER,FRAG));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog,gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
 
-/* ---------- Controls ---------- */
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.dampingFactor = 0.08;
-controls.minDistance = 8;
-controls.maxDistance = 80;
-
-/* ---------- Lights ---------- */
-scene.add(new THREE.AmbientLight(0x99aabb, 0.7));
-const key = new THREE.DirectionalLight(0xffffff, 0.9);
-key.position.set(10,20,10); key.castShadow = true; key.shadow.mapSize.set(1024,1024);
-scene.add(key);
-const rim = new THREE.DirectionalLight(0x66aaff, 0.35);
-rim.position.set(-12,12,-8); scene.add(rim);
-
-/* ---------- Materials ---------- */
-const glass = new THREE.MeshPhysicalMaterial({
-  color: 0x8fb6ff, metalness: 0.2, roughness: 0.15,
-  transmission: 0.6, transparent: true, opacity: 0.35, thickness: 0.6, ior: 1.25
-});
-const floorMat = new THREE.MeshPhongMaterial({ color: 0x14202e, shininess: 8 });
-
-/* ---------- Arena ---------- */
-const ARENA = { x: 24, y: 14, z: 36 }; // half-extents
-const floor = new THREE.Mesh(new THREE.BoxGeometry(ARENA.x*2, 1, ARENA.z*2), floorMat);
-floor.position.y = -0.5; floor.receiveShadow = true; scene.add(floor);
-
-/* nice looking perimeter “glass box” so the bounds are visible */
-const border = new THREE.Group(); scene.add(border);
-function borderWalls(){
-  const t=0.8, h=10;
-  const w1 = new THREE.Mesh(new THREE.BoxGeometry(ARENA.x*2, h, t), glass); w1.position.set(0, h/2-1, -ARENA.z+t/2);
-  const w2 = w1.clone(); w2.position.z = ARENA.z-t/2;
-  const w3 = new THREE.Mesh(new THREE.BoxGeometry(t, h, ARENA.z*2), glass); w3.position.set(-ARENA.x+t/2, h/2-1, 0);
-  const w4 = w3.clone(); w4.position.x = ARENA.x-t/2;
-  border.add(w1,w2,w3,w4);
-}
-borderWalls();
-
-/* ---------- Player Ball ---------- */
-const ballRadius = 1.2;
-const ball = new THREE.Mesh(
-  new THREE.SphereGeometry(ballRadius, 48, 32),
-  new THREE.MeshPhysicalMaterial({ color: 0x45a3ff, metalness: 1, roughness: 0.15, clearcoat: 1, clearcoatRoughness: 0.06 })
-);
-ball.position.set(0, ballRadius, -ARENA.z + 4);
-ball.castShadow = true; scene.add(ball);
-ball.add(new THREE.PointLight(0x46c0ff, 0.9, 12));
-controls.target.copy(ball.position);
-
-/* ---------- Trail ---------- */
-const trailTex = (()=>{ const s=128,c=document.createElement('canvas'); c.width=c.height=s;
-  const g=c.getContext('2d'),r=s/2,gr=g.createRadialGradient(r,r,0,r,r,r);
-  gr.addColorStop(0,'rgba(120,220,255,0.9)'); gr.addColorStop(0.5,'rgba(80,180,255,0.35)'); gr.addColorStop(1,'rgba(0,0,0,0)');
-  g.fillStyle=gr; g.fillRect(0,0,s,s);
-  const t=new THREE.CanvasTexture(c); t.minFilter=THREE.LinearFilter; return t; })();
-const trailGroup = new THREE.Group(); scene.add(trailGroup);
-const trailPool = [];
-function spawnTrail(){
-  const s=0.9+Math.random()*0.5;
-  const spr=new THREE.Sprite(new THREE.SpriteMaterial({map:trailTex,transparent:true,depthWrite:false}));
-  spr.scale.setScalar(s); spr.position.copy(ball.position); spr.position.y -= (ballRadius-0.2);
-  spr.userData.life=0.9; trailGroup.add(spr); trailPool.push(spr);
-}
-
-/* ---------- Level Building ---------- */
-const levelGroup = new THREE.Group(); scene.add(levelGroup);
-function addBox(w,h,d,x,y,z){ const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d), glass); m.position.set(x,y,z); m.castShadow=m.receiveShadow=true; m.geometry.computeBoundingBox(); levelGroup.add(m); return m; }
-
-const makeLevels = [
-  // 1) Intro lanes
-  ()=>{
-    addBox(8,2,2, -10,2,-12);
-    addBox(8,2,2,  10,2,-6);
-    addBox(8,2,2,  0,2, 2);
-    addBox(8,2,2, -10,6,10);
-    addBox(8,2,2,  10,8,14);
-    addBox(2,8,10, 0,4, -18);  // vertical blocker
-  },
-  // 2) Two-story corridors
-  ()=>{
-    addBox(18,2,0.8, 0,3,-12);
-    addBox(18,2,0.8, 0,7, -6);
-    addBox(18,2,0.8, 0,3,  6);
-    addBox(18,2,0.8, 0,7,  12);
-    addBox(0.8,8,12, -8,4, 0);
-    addBox(0.8,8,12,  8,4, 0);
-  },
-  // 3) Floating bridges
-  ()=>{
-    addBox(10,2,2, -8,8,-12);
-    addBox(10,2,2,  8,10,-4);
-    addBox(10,2,2,  0,7, 10);
-    addBox(2,8,8,  0,4, 0);
-  },
-  // 4) Glass labyrinth grid
-  ()=>{
-    for(let z=-12; z<=12; z+=6){
-      addBox(18,2,0.6, 0, 3, z);
-      addBox(18,2,0.6, 0, 7, z+3);
-    }
-    addBox(0.6,8,18, -6,4, 0);
-    addBox(0.6,8,18,  6,4, 0);
-    addBox(8,2,2, -12,2,-16);
-    addBox(8,2,2,  12,2, 16);
-  },
-  // 5) Hollow cube core
-  ()=>{
-    const s=10,t=0.8,h=10,y=6;
-    addBox(s, t, t, 0, y, -s/2); addBox(s, t, t, 0, y,  s/2);
-    addBox(t, t, s, -s/2, y, 0); addBox(t, t, s,  s/2, y, 0);
-    addBox(t, h, t, -s/2, y, -s/2); addBox(t, h, t,  s/2, y, -s/2);
-    addBox(t, h, t, -s/2, y,  s/2); addBox(t, h, t,  s/2, y,  s/2);
-  }
-];
-
-let levelIndex = 0;
-const levelNameEl = document.getElementById('levelName');
-
-function clearLevel(){ for(const c of [...levelGroup.children]){ levelGroup.remove(c); c.geometry.dispose(); } }
-
-function loadLevel(i){
-  clearLevel();
-  makeLevels[i]();
-  resetBall();
-  levelNameEl.textContent = (i+1);
-}
-function resetBall(){
-  ball.position.set(0, ballRadius, -ARENA.z + 4);
-  vel.set(0,0,0);
-  sliding=false; slideDir.set(0,0,0);
-  controls.target.copy(ball.position);
-}
-loadLevel(levelIndex);
-
-/* ---------- Input: one-tap sliding ---------- */
-const keysToDir = {
-  ArrowLeft:  new THREE.Vector3(-1, 0,  0),
-  ArrowRight: new THREE.Vector3( 1, 0,  0),
-  ArrowUp:    new THREE.Vector3( 0, 0, -1),
-  ArrowDown:  new THREE.Vector3( 0, 0,  1),
-  ' ':        new THREE.Vector3( 0, 1,  0),   // Space
-  Shift:      new THREE.Vector3( 0,-1,  0)
+const loc={
+  aPos:gl.getAttribLocation(prog,'aPos'),
+  aNormal:gl.getAttribLocation(prog,'aNormal'),
+  uM:gl.getUniformLocation(prog,'uM'),
+  uVP:gl.getUniformLocation(prog,'uVP'),
+  uColor:gl.getUniformLocation(prog,'uColor'),
+  uLightDir:gl.getUniformLocation(prog,'uLightDir'),
+  uAlpha:gl.getUniformLocation(prog,'uAlpha'),
 };
-addEventListener('keydown', (e)=>{
-  const k = (e.key === ' ') ? ' ' : (e.key.startsWith('Shift')?'Shift':e.key);
-  if(!keysToDir[k]) return;
-  e.preventDefault();
-  if(sliding) return; // ignore while moving
-  startSlide(keysToDir[k].clone());
-});
 
-/* ---------- Slide-to-collision system ---------- */
-const slideSpeed = 28; // units/sec
-let sliding = false;
-let slideDir = new THREE.Vector3();
-let slideTarget = new THREE.Vector3();
-let squash = 0;
-let vel = new THREE.Vector3();
-
-function startSlide(dir){
-  // compute distance to nearest obstacle/bounds in that direction, then set target
-  const maxDist = distanceToHit(ball.position, dir, ballRadius);
-  if(maxDist <= 0.001) return; // nowhere to go
-  slideDir.copy(dir);
-  slideTarget.copy(ball.position).addScaledVector(dir, maxDist);
-  sliding = true;
+/* -------------------- geometry helpers -------------------- */
+function makeBox(w,h,d){
+  const x=w/2,y=h/2,z=d/2;
+  const p=[ // positions
+    // +x
+    x,-y,-z, x, y,-z, x, y, z,  x,-y,-z, x, y, z, x,-y, z,
+    // -x
+   -x,-y,-z,-x,-y, z,-x, y, z, -x,-y,-z,-x, y, z,-x, y,-z,
+    // +y
+   -x, y,-z,-x, y, z, x, y, z, -x, y,-z, x, y, z, x, y,-z,
+    // -y
+   -x,-y,-z, x,-y,-z, x,-y, z, -x,-y,-z, x,-y, z,-x,-y, z,
+    // +z
+   -x,-y, z, x,-y, z, x, y, z, -x,-y, z, x, y, z,-x, y, z,
+    // -z
+   -x,-y,-z,-x, y,-z, x, y,-z, -x,-y,-z, x, y,-z, x,-y,-z
+  ];
+  const n=[ // normals
+    1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0,
+   -1,0,0,-1,0,0,-1,0,0,-1,0,0,-1,0,0,-1,0,0,
+    0,1,0, 0,1,0, 0,1,0, 0,1,0, 0,1,0, 0,1,0,
+    0,-1,0,0,-1,0,0,-1,0,0,-1,0,0,-1,0,0,-1,0,
+    0,0,1, 0,0,1, 0,0,1, 0,0,1, 0,0,1, 0,0,1,
+    0,0,-1,0,0,-1,0,0,-1,0,0,-1,0,0,-1,0,0,-1
+  ];
+  return {pos:new Float32Array(p), nor:new Float32Array(n), count:36};
 }
-function distanceToHit(pos, dir, radius){
-  // distance to arena bounds
-  let dist = Infinity;
-  if(dir.x > 0)  dist = Math.min(dist, (ARENA.x - radius - pos.x));
-  if(dir.x < 0)  dist = Math.min(dist, (pos.x - (-ARENA.x + radius)));
-  if(dir.y > 0)  dist = Math.min(dist, (ARENA.y - radius - pos.y));
-  if(dir.y < 0)  dist = Math.min(dist, (pos.y - (radius)));
-  if(dir.z > 0)  dist = Math.min(dist, (ARENA.z - radius - pos.z));
-  if(dir.z < 0)  dist = Math.min(dist, (pos.z - (-ARENA.z + radius)));
-
-  // distance to each box face we could hit (AABB), only along chosen axis
-  for(const w of levelGroup.children){
-    const g = w.geometry;
-    const min = g.boundingBox.min.clone().add(w.position);
-    const max = g.boundingBox.max.clone().add(w.position);
-
-    // Check overlap on the orthogonal axes (must overlap to hit the face)
-    const overlaps =
-      (pos.y + radius > min.y && pos.y - radius < max.y) &&
-      (pos.x + radius > min.x && pos.x - radius < max.x) &&
-      (pos.z + radius > min.z && pos.z - radius < max.z);
-
-    if(!overlaps) continue;
-
-    if(dir.x > 0 && pos.x < min.x - radius) dist = Math.min(dist, (min.x - radius) - pos.x);
-    if(dir.x < 0 && pos.x > max.x + radius) dist = Math.min(dist, pos.x - (max.x + radius));
-
-    if(dir.y > 0 && pos.y < min.y - radius) dist = Math.min(dist, (min.y - radius) - pos.y);
-    if(dir.y < 0 && pos.y > max.y + radius) dist = Math.min(dist, pos.y - (max.y + radius));
-
-    if(dir.z > 0 && pos.z < min.z - radius) dist = Math.min(dist, (min.z - radius) - pos.z);
-    if(dir.z < 0 && pos.z > max.z + radius) dist = Math.min(dist, pos.z - (max.z + radius));
+function makeSphere(r, seg=24, rings=16){
+  const pos=[], nor=[];
+  for(let j=0;j<rings;j++){
+    const v1=j/rings, v2=(j+1)/rings;
+    const phi1=(v1-0.5)*Math.PI, phi2=(v2-0.5)*Math.PI;
+    for(let i=0;i<seg;i++){
+      const u1=i/seg,u2=(i+1)/seg;
+      const th1=u1*2*Math.PI, th2=u2*2*Math.PI;
+      const q=[
+        sph(th1,phi1), sph(th2,phi1),
+        sph(th2,phi2), sph(th1,phi2),
+      ];
+      // two tris
+      pushTri(q[0],q[1],q[2]);
+      pushTri(q[0],q[2],q[3]);
+    }
   }
-
-  return Math.max(0, dist === Infinity ? 0 : dist);
+  function sph(th,ph){ return [Math.cos(th)*Math.cos(ph), Math.sin(ph), Math.sin(th)*Math.cos(ph)]; }
+  function pushTri(a,b,c){
+    [a,b,c].forEach(v=>{ pos.push(r*v[0], r*v[1], r*v[2]); nor.push(v[0],v[1],v[2]); });
+  }
+  return {pos:new Float32Array(pos), nor:new Float32Array(nor), count:pos.length/3};
 }
 
-/* ---------- UI buttons ---------- */
-document.getElementById('prevBtn').onclick = ()=>{ levelIndex = (levelIndex+makeLevels.length-1)%makeLevels.length; loadLevel(levelIndex); };
-document.getElementById('nextBtn').onclick = ()=>{ levelIndex = (levelIndex+1)%makeLevels.length; loadLevel(levelIndex); };
-document.getElementById('resetBtn').onclick = ()=> resetBall();
+/* -------------------- buffers -------------------- */
+function makeVAO(geo){
+  const vao=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,vao);
+  const interleaved=new Float32Array(geo.pos.length+geo.nor.length);
+  for(let i=0,j=0;i<geo.pos.length/3;i++,j+=6){
+    interleaved[j]=geo.pos[i*3+0]; interleaved[j+1]=geo.pos[i*3+1]; interleaved[j+2]=geo.pos[i*3+2];
+    interleaved[j+3]=geo.nor[i*3+0]; interleaved[j+4]=geo.nor[i*3+1]; interleaved[j+5]=geo.nor[i*3+2];
+  }
+  gl.bufferData(gl.ARRAY_BUFFER,interleaved,gl.STATIC_DRAW);
+  const stride=24;
+  gl.enableVertexAttribArray(loc.aPos); gl.vertexAttribPointer(loc.aPos,3,gl.FLOAT,false,stride,0);
+  gl.enableVertexAttribArray(loc.aNormal); gl.vertexAttribPointer(loc.aNormal,3,gl.FLOAT,false,stride,12);
+  return {buf:vao, count:geo.count};
+}
 
-/* ---------- Helpers ---------- */
-const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
+const boxVAO=makeVAO(makeBox(1,1,1));
+const sphereVAO=makeVAO(makeSphere(1.0,28,18));
 
-/* ---------- Main loop ---------- */
-let last=performance.now(), trailTimer=0;
-function tick(now){
+/* -------------------- scene objects -------------------- */
+const ARENA={x:24,y:14,z:36};
+function wall(w,h,d,x,y,z){ walls.push({w,h,d,x,y,z}); }
+let walls=[];
+
+function buildLevel(i){
+  walls=[];
+  // perimeter
+  wall(ARENA.x*2,10,0.8, 0,4.5,-ARENA.z+0.4);
+  wall(ARENA.x*2,10,0.8, 0,4.5, ARENA.z-0.4);
+  wall(0.8,10,ARENA.z*2,-ARENA.x+0.4,4.5,0);
+  wall(0.8,10,ARENA.z*2, ARENA.x-0.4,4.5,0);
+
+  // inner
+  const L = [
+    ()=>{ wall(8,2,2,-10,2,-12); wall(8,2,2,10,2,-6); wall(8,2,2,0,2,2); wall(8,2,2,-10,6,10); wall(8,2,2,10,8,14); wall(2,8,10,0,4,-18); },
+    ()=>{ wall(18,2,0.8,0,3,-12); wall(18,2,0.8,0,7,-6); wall(18,2,0.8,0,3,6); wall(18,2,0.8,0,7,12); wall(0.8,8,12,-8,4,0); wall(0.8,8,12,8,4,0); },
+    ()=>{ wall(10,2,2,-8,8,-12); wall(10,2,2,8,10,-4); wall(10,2,2,0,7,10); wall(2,8,8,0,4,0); },
+    ()=>{ for(let z=-12;z<=12;z+=6){ wall(18,2,0.6,0,3,z); wall(18,2,0.6,0,7,z+3);} wall(0.6,8,18,-6,4,0); wall(0.6,8,18,6,4,0); wall(8,2,2,-12,2,-16); wall(8,2,2,12,2,16); },
+    ()=>{ const s=10,t=0.8,h=10,y=6; wall(s,t,t,0,y,-s/2); wall(s,t,t,0,y,s/2); wall(t,t,s,-s/2,y,0); wall(t,t,s,s/2,y,0); wall(t,h,t,-s/2,y,-s/2); wall(t,h,t,s/2,y,-s/2); wall(t,h,t,-s/2,y,s/2); wall(t,h,t,s/2,y,s/2); }
+  ];
+  L[i]();
+}
+let level=0; buildLevel(level);
+document.getElementById('levelName').textContent=level+1;
+
+/* ball */
+const radius=1.2;
+let ballPos=[0,radius,-ARENA.z+4];
+let sliding=false, slideDir=[0,0,0], slideTarget=[0,0,0];
+function resetBall(){ ballPos=[0,radius,-ARENA.z+4]; sliding=false; }
+
+/* -------------------- input: one-tap slide -------------------- */
+const keyDir = {
+  ArrowLeft:[-1,0,0], ArrowRight:[1,0,0],
+  ArrowUp:[0,0,-1], ArrowDown:[0,0,1],
+  'Space':[0,1,0], 'Shift':[0,-1,0]
+};
+addEventListener('keydown',e=>{
+  let k=e.key===' '? 'Space' : (e.key.startsWith('Shift')?'Shift':e.key);
+  const d=keyDir[k]; if(!d) return; e.preventDefault();
+  if(sliding) return;
+  startSlide(d);
+});
+function startSlide(dir){
+  const max=distanceToHit(ballPos,dir,radius);
+  if(max<=1e-4) return;
+  slideDir=[...dir];
+  slideTarget=[ ballPos[0]+dir[0]*max, ballPos[1]+dir[1]*max, ballPos[2]+dir[2]*max ];
+  sliding=true;
+}
+function distanceToHit(p,d,r){
+  let dist=Infinity;
+  // bounds
+  if(d[0]>0) dist=Math.min(dist, (ARENA.x-r - p[0]));
+  if(d[0]<0) dist=Math.min(dist, (p[0] - (-ARENA.x+r)));
+  if(d[1]>0) dist=Math.min(dist, (ARENA.y-r - p[1]));
+  if(d[1]<0) dist=Math.min(dist, (p[1] - (r)));
+  if(d[2]>0) dist=Math.min(dist, (ARENA.z-r - p[2]));
+  if(d[2]<0) dist=Math.min(dist, (p[2] - (-ARENA.z+r)));
+  // walls
+  for(const w of walls){
+    const min=[w.x-w.w/2, w.y-w.h/2, w.z-w.d/2];
+    const max=[w.x+w.w/2, w.y+w.h/2, w.z+w.d/2];
+    const overlaps = (p[1]+r>min[1] && p[1]-r<max[1]) && (p[0]+r>min[0] && p[0]-r<max[0]) && (p[2]+r>min[2] && p[2]-r<max[2]);
+    if(!overlaps) continue;
+    if(d[0]>0 && p[0] < min[0]-r) dist=Math.min(dist, (min[0]-r) - p[0]);
+    if(d[0]<0 && p[0] > max[0]+r) dist=Math.min(dist, p[0] - (max[0]+r));
+    if(d[1]>0 && p[1] < min[1]-r) dist=Math.min(dist, (min[1]-r) - p[1]);
+    if(d[1]<0 && p[1] > max[1]+r) dist=Math.min(dist, p[1] - (max[1]+r));
+    if(d[2]>0 && p[2] < min[2]-r) dist=Math.min(dist, (min[2]-r) - p[2]);
+    if(d[2]<0 && p[2] > max[2]+r) dist=Math.min(dist, p[2] - (max[2]+r));
+  }
+  return Math.max(0, dist===Infinity?0:dist);
+}
+
+/* -------------------- camera (orbit) -------------------- */
+let camDist=34, theta=0.9, phi=0.9; // spherical
+let isDrag=false, lastX=0,lastY=0;
+canvas.addEventListener('mousedown',e=>{isDrag=true; lastX=e.clientX; lastY=e.clientY;});
+addEventListener('mouseup',()=>isDrag=false);
+addEventListener('mousemove',e=>{
+  if(!isDrag) return;
+  const dx=(e.clientX-lastX)/canvas.clientWidth, dy=(e.clientY-lastY)/canvas.clientHeight;
+  lastX=e.clientX; lastY=e.clientY;
+  theta-=dx*3.0; phi-=dy*3.0; phi=Math.max(0.2, Math.min(2.7, phi));
+});
+canvas.addEventListener('wheel',e=>{ camDist*= (1+Math.sign(e.deltaY)*0.08); camDist=Math.max(10,Math.min(90,camDist)); });
+
+function camEye(){
+  const x=ballPos[0]+camDist*Math.sin(phi)*Math.cos(theta);
+  const y=ballPos[1]+camDist*Math.cos(phi);
+  const z=ballPos[2]+camDist*Math.sin(phi)*Math.sin(theta);
+  return [x,y,z];
+}
+
+/* -------------------- UI buttons -------------------- */
+document.getElementById('prevBtn').onclick=()=>{ level=(level+4)%5; buildLevel(level); resetBall(); document.getElementById('levelName').textContent=level+1; };
+document.getElementById('nextBtn').onclick=()=>{ level=(level+1)%5; buildLevel(level); resetBall(); document.getElementById('levelName').textContent=level+1; };
+document.getElementById('resetBtn').onclick=()=>{ resetBall(); };
+
+/* -------------------- render helpers -------------------- */
+gl.enable(gl.DEPTH_TEST);
+gl.enable(gl.CULL_FACE);
+gl.cullFace(gl.BACK);
+gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+function drawMesh(vao, model, color, alpha){
+  gl.uniformMatrix4fv(loc.uM,false,model);
+  gl.uniform3fv(loc.uColor,color);
+  gl.uniform1f(loc.uAlpha,alpha);
+  gl.bindBuffer(gl.ARRAY_BUFFER, vao.buf);
+  gl.drawArrays(gl.TRIANGLES,0,vao.count);
+}
+
+/* -------------------- main loop -------------------- */
+let last=performance.now();
+function loop(now){
   const dt=Math.min(0.033,(now-last)/1000); last=now;
 
-  // Slide motion toward precomputed target
+  // slide movement
   if(sliding){
-    const toTarget = slideTarget.clone().sub(ball.position);
-    const step = slideSpeed * dt;
-    const move = Math.min(step, toTarget.length());
-    if(move <= 1e-4){
-      // impact
-      ball.position.copy(slideTarget);
-      sliding = false;
-      squash = 0.18; // little squeeze on stop
-    }else{
-      ball.position.addScaledVector(slideDir, move);
+    const speed=28, step=speed*dt;
+    const to=[slideTarget[0]-ballPos[0], slideTarget[1]-ballPos[1], slideTarget[2]-ballPos[2]];
+    const dist=len(to);
+    if(dist<=step){ ballPos=[...slideTarget]; sliding=false; } else {
+      ballPos=[ ballPos[0]+slideDir[0]*step, ballPos[1]+slideDir[1]*step, ballPos[2]+slideDir[2]*step ];
     }
   }
 
-  // trail & squash
-  trailTimer += dt;
-  if(trailTimer>0.035){ trailTimer=0; spawnTrail(); }
-  for(let i=trailPool.length-1;i>=0;i--){
-    const spr=trailPool[i];
-    spr.userData.life-=dt;
-    spr.material.opacity=Math.max(0, spr.userData.life/0.9);
-    if(spr.userData.life<=0){ spr.parent.remove(spr); spr.material.dispose(); trailPool.splice(i,1); }
-  }
-  if(squash>0){
-    const s=1+Math.sin((0.5-Math.abs(0.5-squash)/0.18)*Math.PI)*0.2;
-    ball.scale.set(s,s,s); squash-=dt; if(squash<=0) ball.scale.set(1,1,1);
-  }
+  gl.clearColor(0.043,0.059,0.078,1); gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
 
-  controls.target.lerp(ball.position,0.12);
-  controls.update();
-  renderer.render(scene,camera);
-  requestAnimationFrame(tick);
+  const aspect=canvas.width/canvas.height;
+  const P=perspective(60*Math.PI/180, aspect, 0.1, 1000);
+  const eye=camEye(), at=ballPos, up=[0,1,0];
+  const V=lookAt(eye,at,up);
+  const VP=mul(P,V,mat4());
+
+  gl.uniformMatrix4fv(loc.uVP,false,VP);
+  gl.uniform3fv(loc.uLightDir,[ -0.6, 1.0, 0.4 ]);
+
+  // floor
+  let M=ident(mat4());
+  M=scale(M,[ARENA.x*2,1,ARENA.z*2]); M=translate(M,[0,-0.5,0]);
+  drawMesh(boxVAO,M,[0.08,0.12,0.18],1.0);
+
+  // glass walls (enable blending)
+  gl.enable(gl.BLEND);
+  for(const w of walls){
+    let Mw=ident(mat4()); Mw=scale(Mw,[w.w,w.h,w.d]); Mw=translate(Mw,[w.x,w.y,w.z]);
+    drawMesh(boxVAO,Mw,[0.55,0.71,1.0],0.35);
+  }
+  gl.disable(gl.BLEND);
+
+  // ball
+  let Mb=ident(mat4()); Mb=scale(Mb,[radius,radius,radius]); Mb=translate(Mb,ballPos);
+  drawMesh(sphereVAO,Mb,[0.27,0.64,1.0],1.0);
+
+  requestAnimationFrame(loop);
 }
-requestAnimationFrame(tick);
-
-/* ---------- Resize ---------- */
-addEventListener('resize', ()=>{
-  camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth,innerHeight);
-});
+requestAnimationFrame(loop);
 </script>
 </body>
 </html>
-
-
