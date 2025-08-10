@@ -100,7 +100,9 @@ const prog=gl.createProgram();
 gl.attachShader(prog,compile(gl.VERTEX_SHADER,VERT));
 gl.attachShader(prog,compile(gl.FRAGMENT_SHADER,FRAG));
 gl.linkProgram(prog);
-if(!gl.getProgramParameter(prog,gl.Link_STATUS)){} // ignore
+if(!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+  console.error('Program link error:', gl.getProgramInfoLog(prog));
+}
 gl.useProgram(prog);
 
 const loc={
