@@ -65,19 +65,29 @@ function S(v){const s=I();s[0]=v[0];s[5]=v[1];s[10]=v[2];return s}
 function compose(...ms){return ms.reduce((acc,m)=>mul(m,acc), I());}
 function perspective(fovy,aspect,near,far){const f=1/Math.tan(fovy/2), nf=1/(near-far);const o=mat4();
   o[0]=f/aspect;o[5]=f;o[10]=(far+near)*nf;o[11]=-1;o[14]=2*far*near*nf;return o}
-function lookAt(eye,at,up){
+function lookAt(eye, at, up){
   const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
   const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
-  const len=a=>Math.hypot(a[0],a[1],a[2]), norm=a=>{const l=len(a)||1;return[a[0]/l,a[1]/l,a[2]/l]};
-  const z=norm(sub(eye,at)), x=norm(cross(up,z)), y=cross(z,x); const o=I();
-  o[0]=x[0]; o[1]=y[0]; o[2]=z[0];
-  o[4]=x[1]; o[5]=y[1]; o[6]=z[1];
-  o[8]=x[2]; o[9]=y[2]; o[10]=z[2];
-  o[12]=-(x[0]*eye[0]+x[1]*eye[1]+x[2]*eye[2]);
-  o[13]=-(y[0]*eye[0]+y[1]*eye[1]+y[2]*eye[2]);
-  o[14]=-(z[0]*eye[0]+z[1]*eye[1]+z[2]*eye[2]);
-  return o;
+  const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+  const len=a=>Math.hypot(a[0],a[1],a[2]);
+  const norm=a=>{const l=len(a)||1; return [a[0]/l,a[1]/l,a[2]/l];};
+
+  const z = norm(sub(eye, at));        // camera forward (eye -> out)
+  const x = norm(cross(up, z));        // right
+  const y = cross(z, x);               // true up
+
+  // Column-major layout (m[col*4 + row])
+  const m = new Float32Array(16);
+  m[0]  = x[0]; m[1]  = x[1]; m[2]  = x[2]; m[3]  = 0;
+  m[4]  = y[0]; m[5]  = y[1]; m[6]  = y[2]; m[7]  = 0;
+  m[8]  = z[0]; m[9]  = z[1]; m[10] = z[2]; m[11] = 0;
+  m[12] = -dot(x, eye);
+  m[13] = -dot(y, eye);
+  m[14] = -dot(z, eye);
+  m[15] = 1;
+  return m;
 }
+
 function normalMat3FromMat4(m){
   const a00=m[0], a01=m[1], a02=m[2];
   const a10=m[4], a11=m[5], a12=m[6];
