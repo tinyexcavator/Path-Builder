@@ -93,8 +93,15 @@ const loc={
 const M=Float32Array;
 function mat4(){return new M(16)} function ident(o){o.set([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]);return o}
 function mul(a,b,out){out=out||mat4();const o=out,A=a,B=b;for(let r=0;r<4;r++)for(let c=0;c<4;c++)o[c+4*r]=A[0+4*r]*B[c+0]+A[1+4*r]*B[c+4]+A[2+4*r]*B[c+8]+A[3+4*r]*B[c+12];return o}
-function translate(m,v){const t=ident(mat4()); t[12]=v[0]; t[13]=v[1]; t[14]=v[2]; return mul(m,t,mat4())}
-function scale(m,v){const s=ident(mat4()); s[0]=v[0]; s[5]=v[1]; s[10]=v[2]; return mul(m,s,mat4())}
+function translate(m,v){
+  const t=ident(mat4()); t[12]=v[0]; t[13]=v[1]; t[14]=v[2];
+  return mul(t, m);           // was: mul(m, t)
+}
+function scale(m,v){
+  const s=ident(mat4()); s[0]=v[0]; s[5]=v[1]; s[10]=v[2];
+  return mul(s, m);           // was: mul(m, s)
+}
+
 function perspective(fovy,aspect,near,far){const f=1/Math.tan(fovy/2), nf=1/(near-far); const o=mat4();
   o[0]=f/aspect; o[5]=f; o[10]=(far+near)*nf; o[11]=-1; o[14]=2*far*near*nf; return o}
 function lookAt(eye,at,up){const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
