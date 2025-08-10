@@ -261,8 +261,20 @@ document.getElementById('nextBtn').onclick=()=>{ level=(level+1)%5; buildLevel(l
 document.getElementById('resetBtn').onclick=()=> resetBall();
 
 /* ============ Draw helpers + debug ============ */
+function bindVAO(vao){
+  gl.bindBuffer(gl.ARRAY_BUFFER, vao.buf);
+  if (loc.aPos >= 0) {
+    gl.vertexAttribPointer(loc.aPos, 3, gl.FLOAT, false, 24, 0);
+    gl.enableVertexAttribArray(loc.aPos);
+  }
+  if (loc.aNormal >= 0) {
+    gl.vertexAttribPointer(loc.aNormal, 3, gl.FLOAT, false, 24, 12);
+    gl.enableVertexAttribArray(loc.aNormal);
+  }
+}
 function draw(vao, model, color, alpha){
   gl.useProgram(prog);
+  bindVAO(vao); 
   gl.uniform3fv(loc.uColor, new Float32Array(color));
   gl.uniform1f(loc.uAlpha, alpha);
   gl.uniformMatrix4fv(loc.uM, false, model);
