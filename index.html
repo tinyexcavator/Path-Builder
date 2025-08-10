@@ -3,16 +3,15 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Roller Glow — WebGL Fix</title>
+<title>Roller Glow — WebGL (sizefix)</title>
 <style>
   html,body{margin:0;height:100%;background:#0b0f14;color:#e8f0ff;font-family:system-ui}
-  canvas{display:block;width:100vw;height:100vh}
+  /* critical: canvas has CSS size; JS maps it to device pixels */
+  #gl{display:block;width:100vw;height:100vh}
   #ui{position:fixed;left:12px;right:12px;top:12px;display:flex;justify-content:space-between;gap:8px;z-index:5;pointer-events:none}
   .card{pointer-events:auto;background:rgba(16,22,30,.72);border:1px solid #203040;border-radius:12px;padding:8px 10px;backdrop-filter:blur(6px)}
   .btn{cursor:pointer;border:1px solid #2f445c;border-radius:10px;background:linear-gradient(180deg,#1a2430,#121923);color:#eaf4ff;font-weight:700;padding:8px 12px}
   .hint{opacity:.85;font-size:12px}
-  #diag{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.78);z-index:9}
-  #diag>div{max-width:900px;background:#2a1620;border:1px solid #7a3a4a;border-radius:12px;padding:16px;color:#ffdbe6;white-space:pre-wrap}
 </style>
 </head>
 <body>
@@ -25,31 +24,61 @@
   </div>
   <div class="card hint">Mouse drag = rotate • Wheel = zoom • Arrows = slide • Space = up • Shift = down</div>
 </div>
-<div id="diag"><div id="diagMsg"></div></div>
 
 <canvas id="gl"></canvas>
 <script>
-const showDiag=(msg)=>{const d=document.getElementById('diag'); d.style.display='flex'; document.getElementById('diagMsg').textContent=msg; console.error(msg);}
-function check(step, gl){const e=gl.getError(); if(e!==gl.NO_ERROR){showDiag(`WebGL error ${e} after: ${step}`); throw new Error(`GL ${e} @ ${step}`);}}
-
-/* ---------- GL init ---------- */
+/* ===== Canvas & WebGL (Safari-safe sizing) ===== */
 const canvas=document.getElementById('gl');
 const gl=canvas.getContext('webgl',{alpha:false,antialias:true});
-if(!gl){ showDiag('WebGL not available'); throw new Error('No WebGL'); }
+if(!gl){ alert('WebGL not available'); throw new Error('No WebGL'); }
 
-function resize(){
-  const dpr=Math.min(2, window.devicePixelRatio||1);
-  const w=Math.floor(innerWidth*dpr), h=Math.floor(innerHeight*dpr);
-  if(canvas.width!==w||canvas.height!==h){ canvas.width=w; canvas.height=h; gl.viewport(0,0,w,h); }
+function fitCanvas(){
+  const dpr = Math.min(2, window.devicePixelRatio||1);
+  const cw = Math.max(1, canvas.clientWidth|0);
+  const ch = Math.max(1, canvas.clientHeight|0);
+  const w = Math.floor(cw*dpr), h = Math.floor(ch*dpr);
+  if(canvas.width!==w || canvas.height!==h){
+    canvas.width = w;
+    canvas.height = h;
+    gl.viewport(0,0,w,h);
+  }
 }
-addEventListener('resize',resize); resize();
+fitCanvas();
+addEventListener('resize', fitCanvas);
+new ResizeObserver(fitCanvas).observe(canvas);
 
-/* ---------- Shaders ---------- */
+/* ===== tiny math (column-major, pre-multiply) ===== */
+const M=Float32Array;
+function mat4(){return new M(16)}
+function I(){return new M([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1])}
+function mul(a,b,out){out=out||mat4();const o=out,A=a,B=b;
+  for(let r=0;r<4;r++)for(let c=0;c<4;c++)o[c+4*r]=A[0+4*r]*B[c+0]+A[1+4*r]*B[c+4]+A[2+4*r]*B[c+8]+A[3+4*r]*B[c+12];
+  return o}
+function T(v){const t=I();t[12]=v[0];t[13]=v[1];t[14]=v[2];return t}
+function S(v){const s=I();s[0]=v[0];s[5]=v[1];s[10]=v[2];return s}
+function compose(...ms){return ms.reduce((acc,m)=>mul(m,acc), I());}
+function perspective(fovy,aspect,near,far){const f=1/Math.tan(fovy/2), nf=1/(near-far);const o=mat4();
+  o[0]=f/aspect;o[5]=f;o[10]=(far+near)*nf;o[11]=-1;o[14]=2*far*near*nf;return o}
+function lookAt(eye,at,up){
+  const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
+  const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+  const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2], len=a=>Math.hypot(a[0],a[1],a[2]), norm=a=>{const l=len(a)||1;return[a[0]/l,a[1]/l,a[2]/l]};
+  const z=norm(sub(eye,at)), x=norm(cross(up,z)), y=cross(z,x); const o=I();
+  o[0]=x[0]; o[1]=y[0]; o[2]=z[0];
+  o[4]=x[1]; o[5]=y[1]; o[6]=z[1];
+  o[8]=x[2]; o[9]=y[2]; o[10]=z[2];
+  o[12]=-(x[0]*eye[0]+x[1]*eye[1]+x[2]*eye[2]);
+  o[13]=-(y[0]*eye[0]+y[1]*eye[1]+y[2]*eye[2]);
+  o[14]=-(z[0]*eye[0]+z[1]*eye[1]+z[2]*eye[2]);
+  return o;
+}
+
+/* ===== shaders ===== */
 const VERT=`
-attribute vec3 aPos, aNormal;
-uniform mat4 uM, uVP;
+attribute vec3 aPos,aNormal;
+uniform mat4 uM,uVP;
 uniform vec3 uColor;
-varying vec3 vN, vColor;
+varying vec3 vN,vColor;
 void main(){
   gl_Position = uVP * uM * vec4(aPos,1.0);
   vN = mat3(uM) * aNormal;
@@ -57,26 +86,22 @@ void main(){
 }`;
 const FRAG=`
 precision mediump float;
-varying vec3 vN, vColor;
+varying vec3 vN,vColor;
 uniform vec3 uLightDir;
 uniform float uAlpha;
 void main(){
-  float NdL = max(dot(normalize(vN), normalize(-uLightDir)), 0.05);
+  float NdL = max(dot(normalize(vN), normalize(-uLightDir)), 0.08);
   vec3 rgb = vColor * (0.25 + 0.75*NdL);
   gl_FragColor = vec4(rgb, uAlpha);
 }`;
-function compile(type,src){
-  const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
-  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){ showDiag('Shader compile error:\n'+gl.getShaderInfoLog(s)); throw new Error('shader'); }
-  return s;
-}
+function compile(type,src){const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));return s}
 const prog=gl.createProgram();
-gl.attachShader(prog, compile(gl.VERTEX_SHADER,VERT));
-gl.attachShader(prog, compile(gl.FRAGMENT_SHADER,FRAG));
+gl.attachShader(prog,compile(gl.VERTEX_SHADER,VERT));
+gl.attachShader(prog,compile(gl.FRAGMENT_SHADER,FRAG));
 gl.linkProgram(prog);
-if(!gl.getProgramParameter(prog,gl.LINK_STATUS)){ showDiag('Program link error:\n'+gl.getProgramInfoLog(prog)); throw new Error('link'); }
-gl.useProgram(prog); // ensure program is current before any uniforms
-check('link/useProgram', gl);
+if(!gl.getProgramParameter(prog,gl.Link_STATUS)){} // ignore
+gl.useProgram(prog);
 
 const loc={
   aPos:gl.getAttribLocation(prog,'aPos'),
@@ -87,43 +112,16 @@ const loc={
   uLightDir:gl.getUniformLocation(prog,'uLightDir'),
   uAlpha:gl.getUniformLocation(prog,'uAlpha'),
 };
-['uM','uVP','uColor','uLightDir','uAlpha'].forEach(k=>{ if(loc[k]==null){ showDiag(`Missing uniform location: ${k}`); throw new Error('uniform'); }});
 
-/* ---------- Math ---------- */
-const M=Float32Array;
-function mat4(){return new M(16)} function ident(o){o.set([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]);return o}
-function mul(a,b,out){out=out||mat4();const o=out,A=a,B=b;for(let r=0;r<4;r++)for(let c=0;c<4;c++)o[c+4*r]=A[0+4*r]*B[c+0]+A[1+4*r]*B[c+4]+A[2+4*r]*B[c+8]+A[3+4*r]*B[c+12];return o}
-function translate(m,v){
-  const t=ident(mat4()); t[12]=v[0]; t[13]=v[1]; t[14]=v[2];
-  return mul(t, m);           // was: mul(m, t)
-}
-function scale(m,v){
-  const s=ident(mat4()); s[0]=v[0]; s[5]=v[1]; s[10]=v[2];
-  return mul(s, m);           // was: mul(m, s)
-}
-
-function perspective(fovy,aspect,near,far){const f=1/Math.tan(fovy/2), nf=1/(near-far); const o=mat4();
-  o[0]=f/aspect; o[5]=f; o[10]=(far+near)*nf; o[11]=-1; o[14]=2*far*near*nf; return o}
-function lookAt(eye,at,up){const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
-  const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
-  const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2], len=a=>Math.hypot(a[0],a[1],a[2]), norm=a=>{const l=len(a)||1; return [a[0]/l,a[1]/l,a[2]/l]};
-  const z=norm(sub(eye,at)), x=norm(cross(up,z)), y=cross(z,x); const o=ident(mat4());
-  o[0]=x[0]; o[1]=y[0]; o[2]=z[0]; o[4]=x[1]; o[5]=y[1]; o[6]=z[1]; o[8]=x[2]; o[9]=y[2]; o[10]=z[2];
-  o[12]=-(x[0]*eye[0]+x[1]*eye[1]+x[2]*eye[2]);
-  o[13]=-(y[0]*eye[0]+y[1]*eye[1]+y[2]*eye[2]);
-  o[14]=-(z[0]*eye[0]+z[1]*eye[1]+z[2]*eye[2]);
-  return o;
-}
-
-/* ---------- Geometry ---------- */
+/* ===== geometry ===== */
 function makeBox(w,h,d){
   const x=w/2,y=h/2,z=d/2,P=[],N=[],faces=[
     [[ x,-y,-z],[ x, y,-z],[ x, y, z],[ x,-y, z]],[[-x,-y,-z],[-x,-y, z],[-x, y, z],[-x, y,-z]],
     [[-x, y,-z],[-x, y, z],[ x, y, z],[ x, y,-z]],[[-x,-y,-z],[ x,-y,-z],[ x,-y, z],[-x,-y, z]],
     [[-x,-y, z],[ x,-y, z],[ x, y, z],[-x, y, z]],[[-x,-y,-z],[-x, y,-z],[ x, y,-z],[ x,-y,-z]]
   ], norms=[[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
-  for(let f=0;f<6;f++){const v=faces[f],n=norms[f],tri=[[...v[0]],[...v[1]],[...v[2]],[...v[0]],[...v[2]],[...v[3]]];
-    tri.forEach(t=>{P.push(...t);N.push(...n);});}
+  for(let f=0;f<6;f++){const v=faces[f],n=norms[f],tris=[v[0],v[1],v[2], v[0],v[2],v[3]];
+    tris.forEach(t=>{P.push(...t);N.push(...n);});}
   return {pos:new Float32Array(P), nor:new Float32Array(N), count:P.length/3};
 }
 function makeSphere(r, seg=28, rings=18){
@@ -141,32 +139,34 @@ function makeVAO(geo){
     inter[j]=geo.pos[i*3]; inter[j+1]=geo.pos[i*3+1]; inter[j+2]=geo.pos[i*3+2];
     inter[j+3]=geo.nor[i*3]; inter[j+4]=geo.nor[i*3+1]; inter[j+5]=geo.nor[i*3+2];
   }
-  const buf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-  gl.bufferData(gl.ARRAY_BUFFER, inter, gl.STATIC_DRAW);
-  // IMPORTANT: pointer first, then enable (safer for some drivers)
+  const buf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+  gl.bufferData(gl.ARRAY_BUFFER,inter,gl.STATIC_DRAW);
   const stride=24;
-  gl.vertexAttribPointer(loc.aPos,3,gl.FLOAT,false,stride,0);      check('vertexAttribPointer aPos', gl);
+  gl.vertexAttribPointer(loc.aPos,3,gl.FLOAT,false,stride,0);
   gl.enableVertexAttribArray(loc.aPos);
-  gl.vertexAttribPointer(loc.aNormal,3,gl.FLOAT,false,stride,12);  check('vertexAttribPointer aNormal', gl);
+  gl.vertexAttribPointer(loc.aNormal,3,gl.FLOAT,false,stride,12);
   gl.enableVertexAttribArray(loc.aNormal);
   return {buf, count:geo.count};
 }
 const boxVAO=makeVAO(makeBox(1,1,1));
 const sphereVAO=makeVAO(makeSphere(1));
 
-/* ---------- Scene data ---------- */
+/* ===== scene data ===== */
 gl.enable(gl.DEPTH_TEST);
 gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK);
 gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
 const ARENA={x:24,y:14,z:36};
 let walls=[]; const W=(w,h,d,x,y,z)=>walls.push({w,h,d,x,y,z});
+
 function buildLevel(i){
-  walls=[]; // bounds
+  walls=[];
+  // perimeter
   W(ARENA.x*2,10,0.8, 0,4.5,-ARENA.z+0.4);
   W(ARENA.x*2,10,0.8, 0,4.5, ARENA.z-0.4);
   W(0.8,10,ARENA.z*2,-ARENA.x+0.4,4.5,0);
   W(0.8,10,ARENA.z*2, ARENA.x-0.4,4.5,0);
+  // inner layouts
   const L=[
     ()=>{ W(8,2,2,-10,2,-12); W(8,2,2,10,2,-6); W(8,2,2,0,2,2); W(8,2,2,-10,6,10); W(8,2,2,10,8,14); W(2,8,10,0,4,-18); },
     ()=>{ W(18,2,0.8,0,3,-12); W(18,2,0.8,0,7,-6); W(18,2,0.8,0,3,6); W(18,2,0.8,0,7,12); W(0.8,8,12,-8,4,0); W(0.8,8,12,8,4,0); },
@@ -174,27 +174,30 @@ function buildLevel(i){
     ()=>{ for(let z=-12;z<=12;z+=6){ W(18,2,0.6,0,3,z); W(18,2,0.6,0,7,z+3);} W(0.6,8,18,-6,4,0); W(0.6,8,18,6,4,0); },
     ()=>{ const s=10,t=0.8,h=10,y=6; W(s,t,t,0,y,-s/2); W(s,t,t,0,y,s/2); W(t,t,s,-s/2,y,0); W(t,t,s,s/2,y,0);
           W(t,h,t,-s/2,y,-s/2); W(t,h,t,s/2,y,-s/2); W(t,h,t,-s/2,y,s/2); W(t,h,t,s/2,y,s/2); }
-  ]; L[i]();
+  ];
+  L[i]();
 }
 let level=0; buildLevel(level); document.getElementById('levelName').textContent=level+1;
 
 /* ball + camera */
 const radius=1.2; let ballPos=[0,radius,-ARENA.z+4];
-let camDist=34, theta=0.9, phi=0.9, dragging=false, lx=0,ly=0;
 function resetBall(){ ballPos=[0,radius,-ARENA.z+4]; sliding=false; }
+let camDist=34, theta=0.9, phi=0.9, dragging=false, lx=0,ly=0;
 canvas.addEventListener('mousedown',e=>{dragging=true; lx=e.clientX; ly=e.clientY;});
 addEventListener('mouseup',()=>dragging=false);
 addEventListener('mousemove',e=>{ if(!dragging) return; const dx=(e.clientX-lx)/canvas.clientWidth, dy=(e.clientY-ly)/canvas.clientHeight; lx=e.clientX; ly=e.clientY; theta-=dx*3; phi-=dy*3; phi=Math.max(0.2, Math.min(2.7, phi)); });
-canvas.addEventListener('wheel',e=>{ camDist*=(1+Math.sign(e.deltaY)*0.08); camDist=Math.max(10,Math.min(90,camDist)); });
+canvas.addEventListener('wheel',e=>{ camDist*= (1+Math.sign(e.deltaY)*0.08); camDist=Math.max(10,Math.min(90,camDist)); });
 
-/* slide controls */
+/* one-tap slide */
 let sliding=false, slideDir=[0,0,0], slideTarget=[0,0,0];
 const keyDir={ArrowLeft:[-1,0,0],ArrowRight:[1,0,0],ArrowUp:[0,0,-1],ArrowDown:[0,0,1],' ':[0,1,0],Shift:[0,-1,0]};
 addEventListener('keydown',e=>{
   const k=(e.key===' ')?' ':(e.key.startsWith('Shift')?'Shift':e.key);
   const d=keyDir[k]; if(!d) return; e.preventDefault();
-  if(sliding) return; const max=distanceToHit(ballPos,d,radius);
-  if(max<=1e-4) return; slideDir=[...d]; slideTarget=[ballPos[0]+d[0]*max,ballPos[1]+d[1]*max,ballPos[2]+d[2]*max]; sliding=true;
+  if(sliding) return;
+  const max=distanceToHit(ballPos,d,radius);
+  if(max<=1e-4) return;
+  slideDir=[...d]; slideTarget=[ballPos[0]+d[0]*max,ballPos[1]+d[1]*max,ballPos[2]+d[2]*max]; sliding=true;
 });
 function distanceToHit(p,d,r){
   let dist=Infinity;
@@ -221,46 +224,51 @@ document.getElementById('nextBtn').onclick=()=>{ level=(level+1)%5; buildLevel(l
 document.getElementById('resetBtn').onclick=()=> resetBall();
 
 /* draw helpers */
-function setMat(name, m){ gl.useProgram(prog); gl.uniformMatrix4fv(loc[name], false, m); check(`uniform ${name}`, gl); }
+const VERT_SRC_USED=true; // marker to confirm correct file loads
+function setMat(name, m){ gl.useProgram(prog); gl.uniformMatrix4fv(loc[name], false, m); }
 function draw(vao, model, color, alpha){
   gl.useProgram(prog);
-  gl.uniform3fv(loc.uColor, new Float32Array(color)); check('uColor', gl);
-  gl.uniform1f(loc.uAlpha, alpha); check('uAlpha', gl);
+  gl.uniform3fv(loc.uColor, new Float32Array(color));
+  gl.uniform1f(loc.uAlpha, alpha);
   setMat('uM', model);
   gl.bindBuffer(gl.ARRAY_BUFFER, vao.buf);
-  gl.drawArrays(gl.TRIANGLES, 0, vao.count); check('drawArrays', gl);
+  gl.drawArrays(gl.TRIANGLES, 0, vao.count);
 }
 
 /* main loop */
 let last=performance.now();
 function frame(now){
+  fitCanvas(); // keep viewport synced every frame
+
   const dt=Math.min(0.033,(now-last)/1000); last=now;
   if(sliding){
-    const speed=28, step=speed*dt, dx=slideTarget[0]-ballPos[0], dy=slideTarget[1]-ballPos[1], dz=slideTarget[2]-ballPos[2];
+    const speed=28, step=speed*dt;
+    const dx=slideTarget[0]-ballPos[0], dy=slideTarget[1]-ballPos[1], dz=slideTarget[2]-ballPos[2];
     const dist=Math.hypot(dx,dy,dz);
-    if(dist<=step){ ballPos=[...slideTarget]; sliding=false; } else { ballPos=[ballPos[0]+slideDir[0]*step, ballPos[1]+slideDir[1]*step, ballPos[2]+slideDir[2]*step]; }
+    if(dist<=step){ ballPos=[...slideTarget]; sliding=false; }
+    else { ballPos=[ballPos[0]+slideDir[0]*step, ballPos[1]+slideDir[1]*step, ballPos[2]+slideDir[2]*step]; }
   }
 
   gl.clearColor(0.06,0.08,0.12,1); gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
 
-  const aspect=canvas.width/canvas.height;
+  const aspect = (canvas.width||1)/(canvas.height||1);
   const P=perspective(60*Math.PI/180, aspect, 0.1, 1000);
   const eye=[ ballPos[0]+34*Math.sin(phi)*Math.cos(theta), ballPos[1]+34*Math.cos(phi), ballPos[2]+34*Math.sin(phi)*Math.sin(theta) ];
   const V=lookAt(eye, ballPos, [0,1,0]);
   const VP=mul(P,V,mat4()); setMat('uVP', VP);
 
   // floor
-  let M=ident(mat4()); M=scale(M,[ARENA.x*2,1,ARENA.z*2]); M=translate(M,[0,-0.5,0]);
-  draw(boxVAO, M, [0.08,0.12,0.18], 1.0);
+  draw(boxVAO, compose(T([0,-0.5,0]), S([ARENA.x*2,1,ARENA.z*2])), [0.08,0.12,0.18], 1.0);
 
-  // walls (glass)
+  // glass walls
   gl.enable(gl.BLEND);
-  for(const w of walls){ let W=ident(mat4()); W=scale(W,[w.w,w.h,w.d]); W=translate(W,[w.x,w.y,w.z]); draw(boxVAO, W, [0.55,0.71,1.0], 0.35); }
+  for(const w of walls){
+    draw(boxVAO, compose(T([w.x,w.y,w.z]), S([w.w,w.h,w.d])), [0.55,0.71,1.0], 0.35);
+  }
   gl.disable(gl.BLEND);
 
   // ball
-  let B=ident(mat4()); B=scale(B,[radius,radius,radius]); B=translate(B,ballPos);
-  draw(sphereVAO, B, [0.27,0.64,1.0], 1.0);
+  draw(sphereVAO, compose(T(ballPos), S([radius,radius,radius])), [0.27,0.64,1.0], 1.0);
 
   requestAnimationFrame(frame);
 }
