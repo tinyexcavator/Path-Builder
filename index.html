@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Roller Glow — WebGL (sizefix)</title>
+<title>Roller Glow — WebGL (sizefix + safari patches)</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>">
 <style>
   html,body{margin:0;height:100%;background:#0b0f14;color:#e8f0ff;font-family:system-ui}
   /* critical: canvas has CSS size; JS maps it to device pixels */
@@ -73,15 +74,41 @@ function lookAt(eye,at,up){
   return o;
 }
 
+/* ===== normal matrix (for Safari correctness) ===== */
+function normalMat3FromMat4(m){
+  // extract upper-left 3x3
+  const a00=m[0], a01=m[1], a02=m[2];
+  const a10=m[4], a11=m[5], a12=m[6];
+  const a20=m[8], a21=m[9], a22=m[10];
+  const b01 =  a22*a11 - a12*a21;
+  const b11 = -a22*a10 + a12*a20;
+  const b21 =  a21*a10 - a11*a20;
+  let det = a00*b01 + a01*b11 + a02*b21;
+  if (!det) return new Float32Array([1,0,0,0,1,0,0,0,1]);
+  det = 1.0/det;
+  const n = new Float32Array(9);
+  n[0] = b01*det;
+  n[1] = (-a22*a01 + a02*a21)*det;
+  n[2] = ( a12*a01 - a02*a11)*det;
+  n[3] = b11*det;
+  n[4] = ( a22*a00 - a02*a20)*det;
+  n[5] = (-a12*a00 + a02*a10)*det;
+  n[6] = b21*det;
+  n[7] = (-a21*a00 + a01*a20)*det;
+  n[8] = ( a11*a00 - a01*a10)*det;
+  return n;
+}
+
 /* ===== shaders ===== */
 const VERT=`
 attribute vec3 aPos,aNormal;
 uniform mat4 uM,uVP;
+uniform mat3 uN;        // normal matrix
 uniform vec3 uColor;
 varying vec3 vN,vColor;
 void main(){
   gl_Position = uVP * uM * vec4(aPos,1.0);
-  vN = mat3(uM) * aNormal;
+  vN = uN * aNormal;
   vColor = uColor;
 }`;
 const FRAG=`
@@ -110,10 +137,14 @@ const loc={
   aNormal:gl.getAttribLocation(prog,'aNormal'),
   uM:gl.getUniformLocation(prog,'uM'),
   uVP:gl.getUniformLocation(prog,'uVP'),
+  uN:gl.getUniformLocation(prog,'uN'),
   uColor:gl.getUniformLocation(prog,'uColor'),
   uLightDir:gl.getUniformLocation(prog,'uLightDir'),
   uAlpha:gl.getUniformLocation(prog,'uAlpha'),
 };
+
+// Set a light direction so things aren't black on Safari
+gl.uniform3fv(loc.uLightDir, new Float32Array([0.4, 1.0, 0.6]));
 
 /* ===== geometry ===== */
 function makeBox(w,h,d){
@@ -130,7 +161,7 @@ function makeSphere(r, seg=28, rings=18){
   const pos=[],nor=[];
   const sph=(t,p)=>[Math.cos(t)*Math.cos(p), Math.sin(p), Math.sin(t)*Math.cos(p)];
   const tri=(a,b,c)=>{[a,b,c].forEach(v=>{pos.push(r*v[0],r*v[1],r*v[2]); nor.push(v[0],v[1],v[2]);});};
-  for(let j=0;j<rings;j++){const p1=(j/rings-0.5)*Math.PI,p2=((j+1)/rings-0.5)*Math.PI;
+  for(let j=0;j<(rings);j++){const p1=(j/rings-0.5)*Math.PI,p2=((j+1)/rings-0.5)*Math.PI;
     for(let i=0;i<seg;i++){const t1=i/seg*2*Math.PI,t2=(i+1)/seg*2*Math.PI; const q=[sph(t1,p1),sph(t2,p1),sph(t2,p2),sph(t1,p2)];
       tri(q[0],q[1],q[2]); tri(q[0],q[2],q[3]);}}
   return {pos:new Float32Array(pos), nor:new Float32Array(nor), count:pos.length/3};
@@ -144,10 +175,16 @@ function makeVAO(geo){
   const buf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,buf);
   gl.bufferData(gl.ARRAY_BUFFER,inter,gl.STATIC_DRAW);
   const stride=24;
-  gl.vertexAttribPointer(loc.aPos,3,gl.FLOAT,false,stride,0);
-  gl.enableVertexAttribArray(loc.aPos);
-  gl.vertexAttribPointer(loc.aNormal,3,gl.FLOAT,false,stride,12);
-  gl.enableVertexAttribArray(loc.aNormal);
+
+  // Guard attribute locations (Safari can return -1 if optimized out)
+  if (loc.aPos >= 0) {
+    gl.vertexAttribPointer(loc.aPos,3,gl.FLOAT,false,stride,0);
+    gl.enableVertexAttribArray(loc.aPos);
+  }
+  if (loc.aNormal >= 0) {
+    gl.vertexAttribPointer(loc.aNormal,3,gl.FLOAT,false,stride,12);
+    gl.enableVertexAttribArray(loc.aNormal);
+  }
   return {buf, count:geo.count};
 }
 const boxVAO=makeVAO(makeBox(1,1,1));
@@ -188,7 +225,12 @@ let camDist=34, theta=0.9, phi=0.9, dragging=false, lx=0,ly=0;
 canvas.addEventListener('mousedown',e=>{dragging=true; lx=e.clientX; ly=e.clientY;});
 addEventListener('mouseup',()=>dragging=false);
 addEventListener('mousemove',e=>{ if(!dragging) return; const dx=(e.clientX-lx)/canvas.clientWidth, dy=(e.clientY-ly)/canvas.clientHeight; lx=e.clientX; ly=e.clientY; theta-=dx*3; phi-=dy*3; phi=Math.max(0.2, Math.min(2.7, phi)); });
-canvas.addEventListener('wheel',e=>{ camDist*= (1+Math.sign(e.deltaY)*0.08); camDist=Math.max(10,Math.min(90,camDist)); });
+// Make wheel listener non-passive so preventDefault works in Safari
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  camDist *= (1 + Math.sign(e.deltaY) * 0.08);
+  camDist = Math.max(10, Math.min(90, camDist));
+}, { passive: false });
 
 /* one-tap slide */
 let sliding=false, slideDir=[0,0,0], slideTarget=[0,0,0];
@@ -232,7 +274,8 @@ function draw(vao, model, color, alpha){
   gl.useProgram(prog);
   gl.uniform3fv(loc.uColor, new Float32Array(color));
   gl.uniform1f(loc.uAlpha, alpha);
-  setMat('uM', model);
+  gl.uniformMatrix4fv(loc.uM, false, model);
+  gl.uniformMatrix3fv(loc.uN, false, normalMat3FromMat4(model)); // Safari-safe normals
   gl.bindBuffer(gl.ARRAY_BUFFER, vao.buf);
   gl.drawArrays(gl.TRIANGLES, 0, vao.count);
 }
