@@ -299,9 +299,7 @@ function frame(now){
 
   // *** Use camDist (fix) ***
   const dist = camDist;
-  const eye=[ ballPos[0]+dist*Math.sin(phi)*Math.cos(theta),
-              ballPos[1]+dist*Math.cos(phi),
-              ballPos[2]+dist*Math.sin(phi)*Math.sin(theta) ];
+  const eye=[0, 50, 50];
   const V=lookAt(eye, ballPos, [0,1,0]);
   const VP=mul(P,V,mat4());
   gl.uniformMatrix4fv(loc.uVP, false, VP);
